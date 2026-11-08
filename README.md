@@ -77,3 +77,4 @@ npm run dev
 - [ ] **Phase 2: Document Ingestion Pipeline** (PDF parsing, recursive text splitting, ChromaDB vectorization)
 - [ ] **Phase 3: Retrieval & Generation Core** (Top-K similarity retrieval, LangChain prompt template, local LLM generation)
 - [ ] **Phase 4: Dual-Pane Interface & Polish** (Upload/delete pane, streaming chat UI, offline verification)
+
