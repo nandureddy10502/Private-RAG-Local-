@@ -64,3 +64,4 @@ if __name__ == "__main__":
     print(f"Generated {len(chunks_small)} chunks.")
     for idx, c in enumerate(chunks_small):
         print(f"Chunk {idx}: {len(c.page_content)} chars | Preview: {c.page_content[:60]}...")
+

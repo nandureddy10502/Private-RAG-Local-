@@ -84,3 +84,4 @@ if __name__ == "__main__":
             print(f"Content preview: {chunks[0].page_content[:200]}...")
     else:
         print("Usage: python document_processor.py <path_to_pdf>")
+
