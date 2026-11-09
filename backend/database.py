@@ -191,3 +191,4 @@ if __name__ == "__main__":
     print("Guest Auth Test:", guest_auth)
     bad_auth = authenticate_user("admin", "wrongpassword")
     print("Bad Auth Test (should be None):", bad_auth)
+

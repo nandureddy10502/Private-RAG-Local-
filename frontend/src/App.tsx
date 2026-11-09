@@ -12,8 +12,16 @@ import {
   X,
   RotateCcw,
   Copy,
-  Check
+  Check,
+  LogOut,
+  User,
+  Lock
 } from 'lucide-react'
+
+interface CurrentUser {
+  id: number
+  username: string
+}
 
 interface SourceCitation {
   file_name: string
@@ -52,6 +60,16 @@ interface ChatApiResponse {
   response: string
   answer?: string
   sources: SourceCitation[]
+  user_id?: number
+}
+
+interface HistoryItem {
+  id: number
+  user_id: number
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+  citations?: SourceCitation[]
 }
 
 interface ErrorBannerState {
@@ -64,6 +82,21 @@ interface ErrorBannerState {
 const LLM_TIMEOUT_MS = 60000
 
 export function App() {
+  // Authentication state
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
+    try {
+      const saved = localStorage.getItem('rag_current_user')
+      return saved ? JSON.parse(saved) : null
+    } catch {
+      return null
+    }
+  })
+  const [loginUsername, setLoginUsername] = useState<string>('admin')
+  const [loginPassword, setLoginPassword] = useState<string>('admin123')
+  const [loginLoading, setLoginLoading] = useState<boolean>(false)
+  const [loginError, setLoginError] = useState<string | null>(null)
+
+  // Sidebar & Upload states
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [isDragging, setIsDragging] = useState<boolean>(false)
   const [isUploading, setIsUploading] = useState<boolean>(false)
@@ -77,15 +110,9 @@ export function App() {
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      content:
-        'Local document search active. Ingest PDF documents in the sidebar to query them. Responses are constrained to your verified local context.',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    },
-  ])
+  // Chat states
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [isHistoryLoading, setIsHistoryLoading] = useState<boolean>(false)
   const [inputQuery, setInputQuery] = useState<string>('')
   const [isChatLoading, setIsChatLoading] = useState<boolean>(false)
   const [thinkingSeconds, setThinkingSeconds] = useState<number>(0)
@@ -96,6 +123,17 @@ export function App() {
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
+  const formatTimestamp = (isoString?: string) => {
+    if (!isoString) return ''
+    try {
+      const d = new Date(isoString)
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    } catch {
+      return isoString
+    }
+  }
+
+  // Auto-scroll anchor
   const scrollToBottom = useCallback((smooth = true) => {
     requestAnimationFrame(() => {
       setTimeout(() => {
@@ -113,9 +151,12 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    scrollToBottom(true)
-  }, [messages, isChatLoading, expandedSources, scrollToBottom])
+    if (currentUser) {
+      scrollToBottom(true)
+    }
+  }, [messages, isChatLoading, expandedSources, currentUser, scrollToBottom])
 
+  // Thinking timer
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null
     if (isChatLoading) {
@@ -131,6 +172,7 @@ export function App() {
     }
   }, [isChatLoading])
 
+  // Fetch document index list
   const checkHealthAndDocs = useCallback(async () => {
     setIsRefreshingDocs(true)
     try {
@@ -152,7 +194,7 @@ export function App() {
         setDocuments(data.documents || [])
       }
     } catch {
-      // Ignored during startup
+      // Ignored
     } finally {
       setIsRefreshingDocs(false)
     }
@@ -162,6 +204,105 @@ export function App() {
     checkHealthAndDocs()
   }, [checkHealthAndDocs])
 
+  // Fetch user history from /api/history/{user_id}
+  const fetchUserHistory = useCallback(async (userId: number) => {
+    setIsHistoryLoading(true)
+    try {
+      const res = await fetch(`/api/history/${userId}`)
+      if (res.ok) {
+        const data = await res.json()
+        const historyRows: HistoryItem[] = data.history || []
+
+        if (historyRows.length > 0) {
+          const mapped: ChatMessage[] = historyRows.map((h) => ({
+            id: `hist-${h.id}`,
+            role: h.role,
+            content: h.content,
+            timestamp: formatTimestamp(h.timestamp),
+            sources: h.citations || [],
+          }))
+          setMessages(mapped)
+        } else {
+          setMessages([
+            {
+              id: 'welcome',
+              role: 'assistant',
+              content:
+                'Session initialized. Documents in the sidebar are indexed locally. Inquire about company policies, architecture, or financials.',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            },
+          ])
+        }
+      }
+    } catch {
+      // Backend may be offline
+    } finally {
+      setIsHistoryLoading(false)
+    }
+  }, [])
+
+  // When currentUser loads or changes, fetch their history
+  useEffect(() => {
+    if (currentUser?.id) {
+      fetchUserHistory(currentUser.id)
+    } else {
+      setMessages([])
+    }
+  }, [currentUser, fetchUserHistory])
+
+  // Login handler
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoginError(null)
+    setLoginLoading(true)
+
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: loginUsername.trim(),
+          password: loginPassword,
+        }),
+      })
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('Invalid username or password.')
+        }
+        const errData = await res.json().catch(() => null)
+        throw new Error(errData?.detail || `Login failed (${res.status})`)
+      }
+
+      const data = await res.json()
+      const userObj: CurrentUser = { id: data.id, username: data.username }
+      setCurrentUser(userObj)
+      try {
+        localStorage.setItem('rag_current_user', JSON.stringify(userObj))
+      } catch {
+        // Storage unavailable
+      }
+    } catch (err: unknown) {
+      setLoginError(err instanceof Error ? err.message : 'Authentication failed.')
+    } finally {
+      setLoginLoading(false)
+    }
+  }
+
+  // Logout handler
+  const handleLogout = () => {
+    setCurrentUser(null)
+    try {
+      localStorage.removeItem('rag_current_user')
+    } catch {
+      // Ignore
+    }
+    setMessages([])
+    setActiveError(null)
+    setUploadFeedback(null)
+  }
+
+  // File upload handling
   const validateAndSetFile = (file: File) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
       setUploadFeedback({
@@ -173,12 +314,6 @@ export function App() {
     }
     setSelectedFile(file)
     setUploadFeedback(null)
-  }
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      validateAndSetFile(e.target.files[0])
-    }
   }
 
   const handleUpload = async (e: React.FormEvent) => {
@@ -229,6 +364,7 @@ export function App() {
     }
   }
 
+  // Execute chat query with user_id
   const executeChatQuery = async (queryText: string) => {
     const trimmed = queryText.trim()
     if (!trimmed || isChatLoading) return
@@ -259,7 +395,10 @@ export function App() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: trimmed }),
+        body: JSON.stringify({
+          query: trimmed,
+          user_id: currentUser?.id,
+        }),
         signal: controller.signal,
       })
 
@@ -355,7 +494,7 @@ export function App() {
       {
         id: 'reset',
         role: 'assistant',
-        content: 'History cleared. Enter a prompt to query your indexed documents.',
+        content: 'Conversation cleared. Enter a prompt to query your indexed documents.',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       },
     ])
@@ -369,11 +508,131 @@ export function App() {
   }
 
   const sampleQueries = [
-    'What is the primary objective of this project?',
-    'How does local air-gapped security work?',
-    'What chunk size and overlap are used for ingestion?',
+    'What was the GAAP revenue and operating income in Q3 2026?',
+    'What are the core hours and equipment stipends for remote workers?',
+    'What distance metric and parameters are configured for ChromaDB in Project Titan?',
   ]
 
+  // =========================================================================
+  // SCREEN 1: SLEEK ENTERPRISE LOGIN (RENDERED WHEN currentUser === null)
+  // =========================================================================
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen w-screen flex items-center justify-center bg-[#141415] text-[#ededed] font-sans antialiased p-4 select-none">
+        <div className="w-full max-w-[340px] bg-[#19191b] border border-white/[0.08] rounded-lg p-6 space-y-5">
+          {/* Brand & Title */}
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold tracking-tight text-[#ededed]">Privacy RAG</span>
+              <span className="text-[10px] font-mono text-[#85858b] px-1.5 py-0.5 rounded border border-white/[0.06] bg-[#141415]">
+                Air-Gapped
+              </span>
+            </div>
+            <p className="text-xs text-[#85858b]">Local enterprise authentication</p>
+          </div>
+
+          {/* Login Form */}
+          <form onSubmit={handleLoginSubmit} className="space-y-3.5">
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-medium text-[#a1a1a6] block">
+                Username
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  required
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  placeholder="admin or guest"
+                  className="w-full h-9 bg-[#141415] border border-white/[0.08] focus:border-white/30 rounded-md px-3 text-xs text-[#ededed] placeholder-[#85858b] focus:outline-none transition-colors"
+                />
+                <User className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#85858b] pointer-events-none" />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-medium text-[#a1a1a6] block">
+                Password
+              </label>
+              <div className="relative">
+                <input
+                  type="password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="Password"
+                  className="w-full h-9 bg-[#141415] border border-white/[0.08] focus:border-white/30 rounded-md px-3 text-xs text-[#ededed] placeholder-[#85858b] focus:outline-none transition-colors"
+                />
+                <Lock className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#85858b] pointer-events-none" />
+              </div>
+            </div>
+
+            {loginError && (
+              <div className="p-2 rounded border border-[#e5484d]/30 bg-[#1c1415] text-[#e5484d] text-xs flex items-center gap-1.5 animate-fadeIn">
+                <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+                <span>{loginError}</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loginLoading || !loginUsername.trim() || !loginPassword}
+              className="w-full h-9 bg-[#ededed] text-[#141415] hover:bg-white active:scale-[0.99] text-xs font-medium rounded-md transition-all duration-120 flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:pointer-events-none cursor-pointer mt-1"
+            >
+              {loginLoading ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>Verifying credentials...</span>
+                </>
+              ) : (
+                <span>Sign in</span>
+              )}
+            </button>
+          </form>
+
+          {/* Quick Demo Accounts Helper */}
+          <div className="pt-3 border-t border-white/[0.06] space-y-2">
+            <span className="text-[10px] text-[#85858b] block font-mono">Demo accounts</span>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginUsername('admin')
+                  setLoginPassword('admin123')
+                  setLoginError(null)
+                }}
+                className="text-left p-2 rounded border border-white/[0.06] bg-[#141415] hover:bg-[#232325] transition-colors cursor-pointer"
+              >
+                <div className="text-[11px] font-medium text-[#ededed]">admin</div>
+                <div className="text-[10px] font-mono text-[#85858b]">admin123</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginUsername('guest')
+                  setLoginPassword('guest123')
+                  setLoginError(null)
+                }}
+                className="text-left p-2 rounded border border-white/[0.06] bg-[#141415] hover:bg-[#232325] transition-colors cursor-pointer"
+              >
+                <div className="text-[11px] font-medium text-[#ededed]">guest</div>
+                <div className="text-[10px] font-mono text-[#85858b]">guest123</div>
+              </button>
+            </div>
+          </div>
+
+          <p className="text-[10px] text-center text-[#85858b] font-mono">
+            Local SQLite authentication • Zero external auth servers
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  // =========================================================================
+  // SCREEN 2: AUTHENTICATED CHAT DASHBOARD & HISTORY
+  // =========================================================================
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#141415] text-[#ededed] font-sans antialiased">
       {/* ========================================================= */}
@@ -438,7 +697,9 @@ export function App() {
                   ref={fileInputRef}
                   type="file"
                   accept="application/pdf,.pdf"
-                  onChange={handleFileChange}
+                  onChange={(e) => {
+                    if (e.target.files?.[0]) validateAndSetFile(e.target.files[0])
+                  }}
                   className="hidden"
                   disabled={isUploading}
                 />
@@ -481,7 +742,7 @@ export function App() {
                       setSelectedFile(null)
                       if (fileInputRef.current) fileInputRef.current.value = ''
                     }}
-                    className="h-8 w-8 rounded-md border border-white/[0.08] hover:bg-[#232325] text-[#85858b] hover:text-[#ededed] transition-colors flex items-center justify-center"
+                    className="h-8 w-8 rounded-md border border-white/[0.08] hover:bg-[#232325] text-[#85858b] hover:text-[#ededed] transition-colors flex items-center justify-center cursor-pointer"
                     title="Remove file"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -555,8 +816,8 @@ export function App() {
             <span className="text-[#a1a1a6]">all-MiniLM-L6-v2</span>
           </div>
           <div className="flex items-center justify-between">
-            <span>Store</span>
-            <span className="text-[#a1a1a6]">ChromaDB</span>
+            <span>User database</span>
+            <span className="text-[#a1a1a6]">SQLite</span>
           </div>
         </div>
       </aside>
@@ -565,21 +826,40 @@ export function App() {
       {/* MAIN CHAT AREA                                            */}
       {/* ========================================================= */}
       <main className="flex-1 flex flex-col h-full bg-[#141415] relative overflow-hidden">
-        {/* Header */}
+        {/* Header with User Info and Logout */}
         <header className="h-13 border-b border-white/[0.08] px-6 flex items-center justify-between bg-[#0f0f10] flex-shrink-0">
           <div className="flex items-center gap-3">
             <span className="text-xs font-medium text-[#ededed]">Corporate Assistant</span>
-            <span className="text-[11px] text-[#85858b]">Constrained to provided context</span>
+            <span className="text-[11px] text-[#85858b]">Strict context retrieval</span>
           </div>
 
-          <button
-            onClick={handleClearChat}
-            className="flex items-center gap-1.5 text-xs text-[#85858b] hover:text-[#ededed] px-2 py-1 rounded hover:bg-[#19191b] transition-colors cursor-pointer"
-            title="Clear chat history"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            <span>Clear</span>
-          </button>
+          <div className="flex items-center gap-2.5">
+            {/* User identifier badge */}
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-[#19191b] border border-white/[0.08] text-[11px] font-mono text-[#a1a1a6]">
+              <User className="h-3 w-3 text-[#85858b]" />
+              <span>{currentUser.username}</span>
+            </div>
+
+            {/* Clear button */}
+            <button
+              onClick={handleClearChat}
+              className="flex items-center gap-1 text-xs text-[#85858b] hover:text-[#ededed] px-2 py-1 rounded hover:bg-[#19191b] transition-colors cursor-pointer"
+              title="Clear chat view"
+            >
+              <Trash2 className="h-3 w-3" />
+              <span>Clear</span>
+            </button>
+
+            {/* Logout button */}
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1 text-xs text-[#85858b] hover:text-[#e5484d] px-2 py-1 rounded hover:bg-[#19191b] transition-colors cursor-pointer ml-1"
+              title="Sign out of account"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              <span>Logout</span>
+            </button>
+          </div>
         </header>
 
         {/* Error Banner */}
@@ -608,7 +888,7 @@ export function App() {
 
             <button
               onClick={() => setActiveError(null)}
-              className="text-[#85858b] hover:text-[#ededed] p-1"
+              className="text-[#85858b] hover:text-[#ededed] p-1 cursor-pointer"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -621,6 +901,13 @@ export function App() {
           className="flex-1 overflow-y-auto px-6 py-6 space-y-4"
         >
           <div className="max-w-[700px] mx-auto space-y-4">
+            {isHistoryLoading && (
+              <div className="text-center py-4 text-xs text-[#85858b] flex items-center justify-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <span>Loading isolated history...</span>
+              </div>
+            )}
+
             {messages.map((message) => {
               const isUser = message.role === 'user'
               const hasSources = message.sources && message.sources.length > 0
@@ -750,7 +1037,7 @@ export function App() {
               </div>
             )}
 
-            {/* Suggested inquiries for initial turn */}
+            {/* Sample queries when history is empty or initial turn */}
             {messages.length === 1 && !isChatLoading && (
               <div className="pt-6 space-y-2">
                 <p className="text-[11px] text-[#85858b]">Sample queries</p>
@@ -805,7 +1092,7 @@ export function App() {
           </form>
 
           <p className="text-[10px] text-center text-[#85858b] mt-1.5 font-mono">
-            Air-gapped execution • All data remains on localhost
+            Air-gapped execution • User: {currentUser.username} • SQLite session
           </p>
         </div>
       </main>
