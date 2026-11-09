@@ -20,10 +20,19 @@ from vector_store import (
     get_embeddings,
 )
 from rag_chain import query_rag
+from database import (
+    init_db,
+    authenticate_user,
+    get_user_by_id,
+    save_chat_message,
+    get_chat_history,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize SQLite database schema and seed default users
+    init_db()
     # Preload HuggingFace embedding weights in a background thread so first search/upload is instant
     threading.Thread(target=get_embeddings, daemon=True).start()
     yield
@@ -51,10 +60,16 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class ChatRequest(BaseModel):
     query: Optional[str] = None
     question: Optional[str] = None
     k: Optional[int] = 4
+    user_id: Optional[int] = None
 
     def get_query_text(self) -> str:
         text = self.query or self.question
@@ -78,8 +93,10 @@ def read_root():
         "docs_url": "/docs",
         "endpoints": {
             "health": "GET /health",
+            "login": "POST /api/login",
             "upload_pdf": "POST /upload",
             "chat": "POST /chat",
+            "history": "GET /api/history/{user_id}",
             "list_documents": "GET /api/documents",
         },
     }
@@ -171,27 +188,95 @@ def upload_pdf(file: UploadFile = File(...)):
         pass
 
 
+@app.post("/login")
+@app.post("/api/login")
+def login(request: LoginRequest):
+    """
+    Accepts JSON body with username and password, checks them against SQLite,
+    and returns the user's ID and username (or 401 Unauthorized if invalid).
+    """
+    user = authenticate_user(request.username, request.password)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password.",
+        )
+    return {
+        "status": "success",
+        "id": user["id"],
+        "username": user["username"],
+    }
+
+
+@app.get("/api/history/{user_id}")
+@app.get("/history/{user_id}")
+def get_user_history_endpoint(user_id: int):
+    """
+    Fetches chat history for a specific user from SQLite,
+    ordered by timestamp ascending.
+    """
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User with ID {user_id} not found.")
+
+    history = get_chat_history(user_id)
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "username": user["username"],
+        "count": len(history),
+        "history": history,
+    }
+
+
 @app.post("/chat")
 @app.post("/api/chat")
 def chat_endpoint(request: ChatRequest):
     """
-    Accepts a JSON body with a 'query' string, passes it to rag_chain.py,
-    and returns the LLM's response with source citations.
+    Accepts a JSON body with a 'query' string and optional 'user_id'.
+    If user_id is provided, saves user question, runs LangChain RAG pipeline,
+    and saves LLM response with serialized citations to SQLite chat_history.
     """
     try:
         query_text = request.get_query_text()
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
 
+    # Validate and save user message if user_id is provided
+    if request.user_id is not None:
+        user = get_user_by_id(request.user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User with ID {request.user_id} not found.")
+
+        save_chat_message(
+            user_id=request.user_id,
+            role="user",
+            content=query_text,
+            citations=None,
+            timestamp=datetime.utcnow().isoformat(),
+        )
+
     try:
         # Query local RAG chain
         result = query_rag(query_text, k=request.k or 4)
+
+        # Save assistant message to SQLite chat_history if user_id is provided
+        if request.user_id is not None:
+            save_chat_message(
+                user_id=request.user_id,
+                role="assistant",
+                content=result["answer"],
+                citations=result["sources"],
+                timestamp=datetime.utcnow().isoformat(),
+            )
+
         return {
             "status": "success",
             "query": query_text,
             "response": result["answer"],
             "answer": result["answer"],
             "sources": result["sources"],
+            "user_id": request.user_id,
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"RAG query failed: {str(exc)}")

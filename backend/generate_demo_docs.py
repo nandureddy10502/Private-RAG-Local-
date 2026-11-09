@@ -332,3 +332,4 @@ if __name__ == "__main__":
 
     # Ingest into ChromaDB
     ingest_demo_documents(generated_pdfs)
+

@@ -25,6 +25,8 @@ wheels/
 # ChromaDB / Vector Store local data
 backend/chroma_db/
 backend/temp/
+backend/*.db
+*.sqlite3
 *.chroma
 
 # Node / Frontend
