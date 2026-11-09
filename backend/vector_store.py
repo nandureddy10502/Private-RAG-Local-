@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 import os
 
+import chromadb
 from langchain_core.documents import Document
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -22,12 +23,34 @@ DEFAULT_MODEL_NAME = "all-MiniLM-L6-v2"
 _embeddings_instance: Optional[HuggingFaceEmbeddings] = None
 
 
+def get_native_collection(
+    persist_directory: str = DEFAULT_PERSIST_DIR,
+    collection_name: str = DEFAULT_COLLECTION_NAME,
+):
+    """
+    Returns the native ChromaDB collection without loading embedding weights.
+    Extremely fast for counting or listing indexed documents.
+    """
+    Path(persist_directory).mkdir(parents=True, exist_ok=True)
+    client = chromadb.PersistentClient(path=persist_directory)
+    return client.get_or_create_collection(collection_name)
+
+
 def get_embeddings(model_name: str = DEFAULT_MODEL_NAME) -> HuggingFaceEmbeddings:
     """
     Returns a cached HuggingFaceEmbeddings instance running locally.
     """
     global _embeddings_instance
     if _embeddings_instance is None:
+        # Default to offline mode if weights are cached locally to support air-gapped environments
+        try:
+            cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+            model_cache = cache_dir / f"models--sentence-transformers--{model_name}"
+            if model_cache.exists():
+                os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        except Exception:
+            pass
+
         _embeddings_instance = HuggingFaceEmbeddings(
             model_name=model_name,
             model_kwargs={"device": "cpu"},

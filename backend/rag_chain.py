@@ -166,3 +166,4 @@ if __name__ == "__main__":
     print("=" * 60)
     for s in result["sources"]:
         print(f"- {s['file_name']} (Page {s['page']}, Chunk {s['chunk_index']})")
+

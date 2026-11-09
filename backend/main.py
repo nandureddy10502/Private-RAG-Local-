@@ -1,25 +1,42 @@
 from datetime import datetime
 from pathlib import Path
+from contextlib import asynccontextmanager
 import os
 import shutil
+import threading
 from typing import List, Optional
 
 import httpx
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from document_processor import load_and_chunk_pdf
-from vector_store import ingest_documents, similarity_search, get_vector_store
+from vector_store import (
+    ingest_documents,
+    similarity_search,
+    get_vector_store,
+    get_native_collection,
+    get_embeddings,
+)
 from rag_chain import query_rag
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Preload HuggingFace embedding weights in a background thread so first search/upload is instant
+    threading.Thread(target=get_embeddings, daemon=True).start()
+    yield
+
 
 app = FastAPI(
     title="Privacy-Preserving RAG Backend",
     description="Air-gapped local RAG API powered by FastAPI, LangChain, ChromaDB, and Ollama",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
-# Enable CORS for local frontend development
+# Configure CORS middleware so React frontend can communicate with all endpoints
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,19 +51,21 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 
+class ChatRequest(BaseModel):
+    query: Optional[str] = None
+    question: Optional[str] = None
+    k: Optional[int] = 4
+
+    def get_query_text(self) -> str:
+        text = self.query or self.question
+        if not text or not text.strip():
+            raise ValueError("Query string cannot be empty.")
+        return text.strip()
+
+
 class SearchRequest(BaseModel):
     query: str
     k: Optional[int] = 4
-
-
-class ChatRequest(BaseModel):
-    question: str
-    k: Optional[int] = 4
-
-
-class SearchResult(BaseModel):
-    content: str
-    metadata: dict
 
 
 @app.get("/")
@@ -57,11 +76,11 @@ def read_root():
         "version": "1.0.0",
         "timestamp": datetime.utcnow().isoformat(),
         "docs_url": "/docs",
-        "health_check": "/health",
         "endpoints": {
-            "upload_pdf": "POST /api/upload",
+            "health": "GET /health",
+            "upload_pdf": "POST /upload",
+            "chat": "POST /chat",
             "list_documents": "GET /api/documents",
-            "similarity_search": "POST /api/search",
         },
     }
 
@@ -81,10 +100,9 @@ async def health_check():
     except Exception as exc:
         ollama_status = f"unavailable ({type(exc).__name__})"
 
-    # ChromaDB collection statistics
     try:
-        vs = get_vector_store()
-        doc_count = vs._collection.count()
+        col = get_native_collection()
+        doc_count = col.count()
     except Exception:
         doc_count = 0
 
@@ -104,12 +122,13 @@ async def health_check():
     }
 
 
-@app.post("/api/upload")
 @app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+@app.post("/api/upload")
+def upload_pdf(file: UploadFile = File(...)):
     """
-    Accepts a PDF file upload, saves it to /temp, extracts text,
-    splits into chunks with LangChain, and stores vectors into ChromaDB.
+    Accepts a PDF file upload, saves it temporarily in /temp,
+    extracts & chunks it with document_processor.py, and embeds/stores
+    it in vector_store.py (ChromaDB).
     """
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -117,12 +136,11 @@ async def upload_pdf(file: UploadFile = File(...)):
             detail="Invalid file format. Only PDF files are supported.",
         )
 
-    # Sanitize and prepare destination file path in temp directory
     safe_filename = Path(file.filename).name
     temp_path = TEMP_DIR / safe_filename
 
     try:
-        # Save uploaded bytes to local /temp directory
+        # Save file temporarily to /temp
         with temp_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
@@ -130,38 +148,65 @@ async def upload_pdf(file: UploadFile = File(...)):
         if file_size == 0:
             raise HTTPException(status_code=400, detail="Uploaded PDF file is empty.")
 
-        # 1. Parse and chunk the PDF
+        # 1. Extract text and split into chunks with document_processor.py
         chunks = load_and_chunk_pdf(temp_path, chunk_size=1000, chunk_overlap=200)
 
-        # 2. Ingest into local ChromaDB
+        # 2. Ingest into ChromaDB with vector_store.py
         chunk_ids = ingest_documents(chunks)
 
         return {
             "status": "success",
-            "message": f"Successfully ingested {len(chunks)} chunks into local ChromaDB.",
+            "message": f"Successfully ingested {len(chunks)} chunks into ChromaDB.",
             "filename": safe_filename,
-            "file_size_bytes": file_size,
+            "chunks_ingested": len(chunks),
             "chunk_count": len(chunks),
+            "file_size_bytes": file_size,
             "chunk_ids": chunk_ids,
-            "sample_preview": chunks[0].page_content[:200] if chunks else "",
         }
 
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(exc)}")
+    finally:
+        # File is kept in temp or can be cleaned up
+        pass
+
+
+@app.post("/chat")
+@app.post("/api/chat")
+def chat_endpoint(request: ChatRequest):
+    """
+    Accepts a JSON body with a 'query' string, passes it to rag_chain.py,
+    and returns the LLM's response with source citations.
+    """
+    try:
+        query_text = request.get_query_text()
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+    try:
+        # Query local RAG chain
+        result = query_rag(query_text, k=request.k or 4)
+        return {
+            "status": "success",
+            "query": query_text,
+            "response": result["answer"],
+            "answer": result["answer"],
+            "sources": result["sources"],
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"RAG query failed: {str(exc)}")
 
 
 @app.get("/api/documents")
 def list_documents():
     """
-    Lists distinct documents currently indexed in the local ChromaDB vector store.
+    Lists distinct documents currently indexed in ChromaDB.
     """
     try:
-        vs = get_vector_store()
-        col = vs._collection
+        col = get_native_collection()
         data = col.get()
         metadatas = data.get("metadatas", []) or []
-        
-        # Aggregate chunk counts by file_name
+
         doc_summary = {}
         for meta in metadatas:
             if not meta:
@@ -177,44 +222,6 @@ def list_documents():
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to query index: {str(exc)}")
-
-
-@app.post("/api/search")
-def search_knowledge_base(request: SearchRequest):
-    """
-    Performs similarity search against the local ChromaDB store.
-    """
-    try:
-        results = similarity_search(request.query, k=request.k)
-        return {
-            "query": request.query,
-            "match_count": len(results),
-            "results": [
-                SearchResult(content=r.page_content, metadata=r.metadata)
-                for r in results
-            ],
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(exc)}")
-
-
-@app.post("/api/chat")
-@app.post("/chat")
-def chat_with_rag(request: ChatRequest):
-    """
-    Executes full air-gapped RAG pipeline: retrieves ChromaDB chunks
-    and prompts local Ollama qwen2.5-coder:7b model.
-    """
-    try:
-        result = query_rag(request.question, k=request.k)
-        return {
-            "status": "success",
-            "question": result["question"],
-            "answer": result["answer"],
-            "sources": result["sources"],
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"RAG query failed: {str(exc)}")
 
 
 if __name__ == "__main__":
