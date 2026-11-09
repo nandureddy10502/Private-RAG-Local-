@@ -1,30 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  ShieldCheck,
-  UploadCloud,
   FileText,
   Send,
-  Bot,
-  User,
   Loader2,
-  CheckCircle2,
   AlertCircle,
-  AlertTriangle,
   Trash2,
-  Sparkles,
   BookOpen,
-  Database,
   ChevronDown,
   ChevronUp,
-  Cpu,
   RefreshCw,
-  FolderOpen,
   X,
   RotateCcw,
-  WifiOff,
   Copy,
-  Check,
-  Server
+  Check
 } from 'lucide-react'
 
 interface SourceCitation {
@@ -73,10 +61,9 @@ interface ErrorBannerState {
   retryQuery?: string
 }
 
-const LLM_TIMEOUT_MS = 60000 // 60 seconds timeout for local 7B inference
+const LLM_TIMEOUT_MS = 60000
 
 export function App() {
-  // Sidebar & Upload states
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [isDragging, setIsDragging] = useState<boolean>(false)
   const [isUploading, setIsUploading] = useState<boolean>(false)
@@ -90,13 +77,12 @@ export function App() {
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Chat states
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
-      id: 'welcome-message',
+      id: 'welcome',
       role: 'assistant',
       content:
-        'Welcome to the Privacy-Preserving Enterprise RAG Assistant. Upload your internal documents in the sidebar, and I will answer your questions strictly using verified local context. All vectors and inferences remain 100% on your machine.',
+        'Local document search active. Ingest PDF documents in the sidebar to query them. Responses are constrained to your verified local context.',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ])
@@ -104,16 +90,13 @@ export function App() {
   const [isChatLoading, setIsChatLoading] = useState<boolean>(false)
   const [thinkingSeconds, setThinkingSeconds] = useState<number>(0)
   const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({})
-  const [copiedSnippetId, setCopiedSnippetId] = useState<string | null>(null)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [activeError, setActiveError] = useState<ErrorBannerState | null>(null)
 
-  // DOM Refs for auto-scroll
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  // Robust auto-scroll to absolute bottom
   const scrollToBottom = useCallback((smooth = true) => {
-    // requestAnimationFrame ensures layout calculations (like expanded citations) have rendered
     requestAnimationFrame(() => {
       setTimeout(() => {
         if (chatEndRef.current) {
@@ -125,22 +108,20 @@ export function App() {
         if (messagesContainerRef.current) {
           messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight
         }
-      }, 30)
+      }, 20)
     })
   }, [])
 
-  // Auto-scroll when messages, thinking state, or expanded sources change
   useEffect(() => {
     scrollToBottom(true)
   }, [messages, isChatLoading, expandedSources, scrollToBottom])
 
-  // Timer for thinking indicator
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null
     if (isChatLoading) {
       setThinkingSeconds(0)
       interval = setInterval(() => {
-        setThinkingSeconds((prev) => prev + 1)
+        setThinkingSeconds((s) => s + 1)
       }, 1000)
     } else {
       setThinkingSeconds(0)
@@ -150,16 +131,13 @@ export function App() {
     }
   }, [isChatLoading])
 
-  // Health check & Document listing
   const checkHealthAndDocs = useCallback(async () => {
     setIsRefreshingDocs(true)
     try {
       const healthRes = await fetch('/health', { signal: AbortSignal.timeout(3000) })
       if (healthRes.ok) {
         setBackendOnline(true)
-        if (activeError?.type === 'network') {
-          setActiveError(null)
-        }
+        if (activeError?.type === 'network') setActiveError(null)
       } else {
         setBackendOnline(false)
       }
@@ -174,7 +152,7 @@ export function App() {
         setDocuments(data.documents || [])
       }
     } catch {
-      // Ignored if backend starting
+      // Ignored during startup
     } finally {
       setIsRefreshingDocs(false)
     }
@@ -184,31 +162,11 @@ export function App() {
     checkHealthAndDocs()
   }, [checkHealthAndDocs])
 
-  // Drag and Drop handlers
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-  }
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0]
-      validateAndSetFile(file)
-    }
-  }
-
   const validateAndSetFile = (file: File) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
       setUploadFeedback({
         type: 'error',
-        message: 'Unsupported format. Please select a valid PDF file (.pdf).',
+        message: 'Unsupported format. Select a PDF file.',
       })
       setSelectedFile(null)
       return
@@ -223,7 +181,6 @@ export function App() {
     }
   }
 
-  // Upload handler with robust error catching
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!selectedFile) return
@@ -235,7 +192,7 @@ export function App() {
     formData.append('file', selectedFile)
 
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 90000) // 90s for large PDF chunking
+    const timeoutId = setTimeout(() => controller.abort(), 90000)
 
     try {
       const response = await fetch('/api/upload', {
@@ -243,45 +200,35 @@ export function App() {
         body: formData,
         signal: controller.signal,
       })
-
       clearTimeout(timeoutId)
 
       if (!response.ok) {
         const errData = await response.json().catch(() => null)
-        throw new Error(errData?.detail || `Upload failed with status code ${response.status}`)
+        throw new Error(errData?.detail || `Upload failed (${response.status})`)
       }
 
       const data: UploadResponse = await response.json()
       setUploadFeedback({
         type: 'success',
-        message: data.message || `Successfully ingested ${data.chunks_ingested} chunks!`,
+        message: `Ingested ${data.chunks_ingested} chunks from ${data.filename}`,
         chunkCount: data.chunks_ingested,
       })
 
       setSelectedFile(null)
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ''
-      }
+      if (fileInputRef.current) fileInputRef.current.value = ''
       checkHealthAndDocs()
     } catch (err: unknown) {
-      let msg = 'Failed to upload document.'
+      clearTimeout(timeoutId)
+      let msg = 'Upload failed'
       if (err instanceof Error) {
-        if (err.name === 'AbortError') {
-          msg = 'Upload processing timed out. The document may be very large or dense.'
-        } else {
-          msg = err.message
-        }
+        msg = err.name === 'AbortError' ? 'Upload timed out' : err.message
       }
-      setUploadFeedback({
-        type: 'error',
-        message: msg,
-      })
+      setUploadFeedback({ type: 'error', message: msg })
     } finally {
       setIsUploading(false)
     }
   }
 
-  // Chat message submission with LLM timeout & network error handling
   const executeChatQuery = async (queryText: string) => {
     const trimmed = queryText.trim()
     if (!trimmed || isChatLoading) return
@@ -311,9 +258,7 @@ export function App() {
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: trimmed }),
         signal: controller.signal,
       })
@@ -322,8 +267,7 @@ export function App() {
 
       if (!response.ok) {
         const errData = await response.json().catch(() => null)
-        const errMsg = errData?.detail || `Server returned HTTP ${response.status}: ${response.statusText}`
-        throw new Error(errMsg)
+        throw new Error(errData?.detail || `HTTP ${response.status}`)
       }
 
       const data: ChatApiResponse = await response.json()
@@ -339,7 +283,7 @@ export function App() {
         {
           id: assistantMessageId,
           role: 'assistant',
-          content: data.response || data.answer || 'No response generated from the model.',
+          content: data.response || data.answer || 'No answer found in context.',
           timestamp: assistantTimestamp,
           sources: data.sources || [],
         },
@@ -347,23 +291,21 @@ export function App() {
     } catch (err: unknown) {
       clearTimeout(timeoutId)
       let errorType: 'timeout' | 'network' | 'server' = 'server'
-      let errorTitle = 'LLM Generation Error'
-      let errorMessage = 'An unexpected error occurred while communicating with the assistant.'
+      let errorTitle = 'Query error'
+      let errorMessage = 'An error occurred during inference.'
 
       if (err instanceof Error) {
         if (err.name === 'AbortError') {
           errorType = 'timeout'
-          errorTitle = 'LLM Inference Timeout'
-          errorMessage = `Local Ollama model ('qwen2.5-coder:7b') exceeded the ${LLM_TIMEOUT_MS / 1000}s limit. The model may be initializing or system resources may be constrained.`
+          errorTitle = 'Inference timeout'
+          errorMessage = `Model evaluation exceeded ${LLM_TIMEOUT_MS / 1000}s limit.`
         } else if (
           err.message.includes('Failed to fetch') ||
-          err.message.includes('NetworkError') ||
-          err.message.includes('Load failed')
+          err.message.includes('NetworkError')
         ) {
           errorType = 'network'
-          errorTitle = 'Backend Unreachable'
-          errorMessage =
-            'Unable to connect to the FastAPI backend at http://127.0.0.1:8000. Ensure the server process is running.'
+          errorTitle = 'Backend unreachable'
+          errorMessage = 'Cannot reach backend at 127.0.0.1:8000.'
           setBackendOnline(false)
         } else {
           errorMessage = err.message
@@ -377,13 +319,12 @@ export function App() {
         retryQuery: trimmed,
       })
 
-      const errorMsgId = `assistant-error-${Date.now()}`
       setMessages([
         ...updatedMessages,
         {
-          id: errorMsgId,
+          id: `err-${Date.now()}`,
           role: 'assistant',
-          content: `⚠️ ${errorTitle}: ${errorMessage}`,
+          content: `${errorTitle}: ${errorMessage}`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           error: true,
           queryAttempted: trimmed,
@@ -394,119 +335,103 @@ export function App() {
     }
   }
 
-  const handleSendMessage = (e?: React.FormEvent) => {
-    if (e) e.preventDefault()
-    executeChatQuery(inputQuery)
-  }
-
   const toggleSources = (msgId: string) => {
     setExpandedSources((prev) => {
       const next = { ...prev, [msgId]: !prev[msgId] }
-      // Trigger scroll after state update
-      setTimeout(() => scrollToBottom(true), 50)
+      setTimeout(() => scrollToBottom(true), 30)
       return next
     })
   }
 
-  const handleCopySnippet = (snippet: string, snippetId: string) => {
+  const handleCopySnippet = (snippet: string, key: string) => {
     navigator.clipboard.writeText(snippet)
-    setCopiedSnippetId(snippetId)
-    setTimeout(() => setCopiedSnippetId(null), 2000)
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey(null), 1500)
   }
 
   const handleClearChat = () => {
     setActiveError(null)
     setMessages([
       {
-        id: 'reset-welcome',
+        id: 'reset',
         role: 'assistant',
-        content:
-          'Chat history reset. How can I assist you with your ingested enterprise documents?',
+        content: 'History cleared. Enter a prompt to query your indexed documents.',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       },
     ])
   }
 
-  const formatFileSize = (bytes?: number) => {
+  const formatBytes = (bytes?: number) => {
     if (!bytes) return ''
     if (bytes < 1024) return `${bytes} B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }
 
-  // Quick suggestion chips
-  const suggestedPrompts = [
+  const sampleQueries = [
     'What is the primary objective of this project?',
     'How does local air-gapped security work?',
     'What chunk size and overlap are used for ingestion?',
   ]
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans antialiased selection:bg-cyan-500/30 selection:text-cyan-200">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#141415] text-[#ededed] font-sans antialiased">
       {/* ========================================================= */}
-      {/* SIDEBAR: Document Upload & Knowledge Base Management      */}
+      {/* SIDEBAR                                                   */}
       {/* ========================================================= */}
-      <aside className="w-80 sm:w-96 flex-shrink-0 flex flex-col border-r border-slate-800/80 bg-slate-900/70 backdrop-blur-xl transition-all duration-300 select-none">
+      <aside className="w-[260px] flex-shrink-0 flex flex-col border-r border-white/[0.08] bg-[#0f0f10] select-none">
         {/* Brand Header */}
-        <div className="p-5 border-b border-slate-800/80 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20 flex-shrink-0 ring-1 ring-white/20">
-              <ShieldCheck className="h-5 w-5 text-white" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="font-bold text-sm tracking-tight text-white">Privacy RAG</h1>
-                <span className="text-[10px] px-2 py-0.5 rounded-full font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shadow-sm">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  Air-Gapped
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 mt-0.5">Enterprise Semantic Search</p>
-            </div>
+        <div className="h-13 px-4 border-b border-white/[0.08] flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium tracking-tight text-[#ededed]">Privacy RAG</span>
+            <span className="text-[10px] font-mono text-[#85858b] px-1.5 py-0.5 rounded border border-white/[0.06] bg-[#19191b]">
+              Local
+            </span>
           </div>
 
           <div
-            className={`h-2.5 w-2.5 rounded-full ring-4 ${
+            className={`h-2 w-2 rounded-full ${
               backendOnline === true
-                ? 'bg-emerald-400 ring-emerald-500/20'
+                ? 'bg-[#4cc38a]'
                 : backendOnline === false
-                ? 'bg-rose-500 ring-rose-500/20'
-                : 'bg-amber-400 ring-amber-500/20'
+                ? 'bg-[#e5484d]'
+                : 'bg-[#85858b]'
             }`}
-            title={
-              backendOnline === true
-                ? 'Backend connected (:8000)'
-                : backendOnline === false
-                ? 'Backend unreachable'
-                : 'Checking backend...'
-            }
+            title={backendOnline ? 'Backend 127.0.0.1:8000' : 'Offline'}
           />
         </div>
 
-        {/* Scrollable Ingestion Area */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-6">
-          {/* Upload Form Card */}
-          <div className="rounded-2xl border border-slate-800/90 bg-slate-900/90 p-4 shadow-sm transition-all duration-200">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-semibold text-slate-200 flex items-center gap-2">
-                <UploadCloud className="h-4 w-4 text-cyan-400" />
-                Upload PDF Document
-              </span>
-              <span className="text-[10px] font-mono text-slate-500">Max 50MB</span>
+        {/* Sidebar Content */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-5">
+          {/* Document Ingestion Card */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between text-xs text-[#a1a1a6]">
+              <span>Upload PDF</span>
+              <span className="text-[10px] font-mono tabular-nums text-[#85858b]">Max 50MB</span>
             </div>
 
-            <form onSubmit={handleUpload} className="space-y-3">
+            <form onSubmit={handleUpload} className="space-y-2">
               <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  setIsDragging(true)
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault()
+                  setIsDragging(false)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  setIsDragging(false)
+                  if (e.dataTransfer.files?.[0]) validateAndSetFile(e.dataTransfer.files[0])
+                }}
                 onClick={() => fileInputRef.current?.click()}
-                className={`relative border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-all duration-200 ${
+                className={`border border-dashed rounded-md p-3 text-center cursor-pointer transition-colors duration-150 ${
                   isDragging
-                    ? 'border-cyan-400 bg-cyan-950/40 scale-[1.01]'
+                    ? 'border-white/30 bg-[#232325]'
                     : selectedFile
-                    ? 'border-cyan-500/60 bg-cyan-950/20 shadow-inner'
-                    : 'border-slate-700/80 hover:border-slate-600 bg-slate-950/40 hover:bg-slate-950/60'
+                    ? 'border-white/20 bg-[#19191b]'
+                    : 'border-white/[0.1] hover:border-white/20 bg-[#141415]'
                 }`}
               >
                 <input
@@ -517,51 +442,34 @@ export function App() {
                   className="hidden"
                   disabled={isUploading}
                 />
-                <div className="flex flex-col items-center justify-center gap-1.5">
-                  <div
-                    className={`p-2.5 rounded-full transition-transform duration-200 ${
-                      selectedFile ? 'bg-cyan-500/20 text-cyan-300 scale-105' : 'bg-slate-800 text-slate-300'
-                    }`}
-                  >
-                    <FileText className="h-5 w-5 text-cyan-400" />
+                {selectedFile ? (
+                  <div className="space-y-1">
+                    <p className="text-xs text-[#ededed] font-medium truncate">{selectedFile.name}</p>
+                    <p className="text-[11px] font-mono tabular-nums text-[#85858b]">
+                      {formatBytes(selectedFile.size)}
+                    </p>
                   </div>
-                  {selectedFile ? (
-                    <div className="max-w-full px-2">
-                      <p className="text-xs font-medium text-cyan-200 truncate">
-                        {selectedFile.name}
-                      </p>
-                      <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-                        {formatFileSize(selectedFile.size)}
-                      </p>
-                    </div>
-                  ) : (
-                    <>
-                      <p className="text-xs text-slate-200 font-medium">
-                        Click or drag PDF here
-                      </p>
-                      <p className="text-[11px] text-slate-500">Indexed into local ChromaDB</p>
-                    </>
-                  )}
-                </div>
+                ) : (
+                  <div className="space-y-1">
+                    <p className="text-xs text-[#a1a1a6]">Select PDF or drop here</p>
+                    <p className="text-[10px] text-[#85858b]">Recursive 1000 / 200</p>
+                  </div>
+                )}
               </div>
 
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <button
                   type="submit"
                   disabled={!selectedFile || isUploading}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 active:scale-[0.98] transition-all duration-200 disabled:opacity-40 disabled:pointer-events-none shadow-md shadow-cyan-950/40 cursor-pointer"
+                  className="flex-1 h-8 px-3 rounded-md text-xs font-medium bg-[#ededed] text-[#141415] hover:bg-white active:scale-[0.99] transition-all duration-120 disabled:opacity-30 disabled:pointer-events-none cursor-pointer flex items-center justify-center gap-1.5"
                 >
                   {isUploading ? (
                     <>
-                      <Loader2 className="h-4 w-4 animate-spin text-white" />
-                      <span>Ingesting & Embedding...</span>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Ingesting...</span>
                     </>
                   ) : (
-                    <>
-                      <UploadCloud className="h-4 w-4" />
-                      <span>Upload & Ingest</span>
-                    </>
+                    <span>Upload document</span>
                   )}
                 </button>
 
@@ -573,86 +481,61 @@ export function App() {
                       setSelectedFile(null)
                       if (fileInputRef.current) fileInputRef.current.value = ''
                     }}
-                    className="p-2.5 rounded-xl text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 transition-colors"
-                    title="Remove selected file"
+                    className="h-8 w-8 rounded-md border border-white/[0.08] hover:bg-[#232325] text-[#85858b] hover:text-[#ededed] transition-colors flex items-center justify-center"
+                    title="Remove file"
                   >
-                    <X className="h-4 w-4" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 )}
               </div>
             </form>
 
-            {/* Upload Feedback Message */}
             {uploadFeedback && (
               <div
-                className={`mt-3 p-3 rounded-xl text-xs border flex items-start gap-2.5 animate-fadeIn transition-all duration-200 ${
+                className={`p-2.5 rounded-md text-xs border leading-relaxed ${
                   uploadFeedback.type === 'success'
-                    ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
-                    : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                    ? 'border-[#4cc38a]/20 bg-[#4cc38a]/5 text-[#4cc38a]'
+                    : 'border-[#e5484d]/20 bg-[#e5484d]/5 text-[#e5484d]'
                 }`}
               >
-                {uploadFeedback.type === 'success' ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-rose-400 flex-shrink-0 mt-0.5" />
-                )}
-                <div className="flex-1 leading-relaxed">
-                  <p className="font-medium">{uploadFeedback.message}</p>
-                  {uploadFeedback.chunkCount !== undefined && (
-                    <p className="text-[11px] text-emerald-400/80 mt-0.5 font-mono">
-                      Persistent in local ChromaDB store.
-                    </p>
-                  )}
-                </div>
+                {uploadFeedback.message}
               </div>
             )}
           </div>
 
           {/* Ingested Documents List */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between text-xs font-semibold text-slate-400 px-1">
-              <span className="flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
-                <Database className="h-3.5 w-3.5 text-cyan-400" />
-                Knowledge Base ({documents.length})
-              </span>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-[#a1a1a6]">
+              <span>Knowledge base</span>
               <button
                 onClick={checkHealthAndDocs}
                 disabled={isRefreshingDocs}
-                className="text-slate-400 hover:text-slate-200 transition-colors duration-150 p-1 rounded hover:bg-slate-800 cursor-pointer"
-                title="Refresh knowledge base"
+                className="text-[#85858b] hover:text-[#ededed] transition-colors p-0.5 rounded cursor-pointer"
+                title="Refresh index list"
               >
                 <RefreshCw className={`h-3 w-3 ${isRefreshingDocs ? 'animate-spin' : ''}`} />
               </button>
             </div>
 
             {documents.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-800/80 p-5 text-center bg-slate-950/30">
-                <FolderOpen className="h-6 w-6 text-slate-600 mx-auto mb-1.5" />
-                <p className="text-xs text-slate-400 font-medium">No documents ingested yet</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Upload a PDF above to enable semantic search
-                </p>
+              <div className="p-3 border border-white/[0.06] rounded-md bg-[#141415] text-center">
+                <p className="text-xs text-[#85858b]">No documents indexed</p>
               </div>
             ) : (
-              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              <div className="space-y-1 max-h-52 overflow-y-auto pr-0.5">
                 {documents.map((doc, idx) => (
                   <div
                     key={`${doc.file_name}-${idx}`}
-                    className="flex items-center justify-between p-2.5 rounded-xl border border-slate-800/80 bg-slate-900/50 hover:bg-slate-900 hover:border-slate-700/80 transition-all duration-200 group"
+                    className="h-8 px-2 rounded-md hover:bg-[#19191b] flex items-center justify-between text-xs transition-colors duration-100 group"
                   >
-                    <div className="flex items-center gap-2.5 overflow-hidden">
-                      <div className="h-7 w-7 rounded-lg bg-cyan-950/60 border border-cyan-800/40 flex items-center justify-center flex-shrink-0 group-hover:scale-105 transition-transform">
-                        <FileText className="h-3.5 w-3.5 text-cyan-400" />
-                      </div>
-                      <span
-                        className="text-xs text-slate-200 truncate font-medium max-w-[170px]"
-                        title={doc.file_name}
-                      >
+                    <div className="flex items-center gap-2 truncate pr-2">
+                      <FileText className="h-3.5 w-3.5 text-[#85858b] flex-shrink-0" />
+                      <span className="text-[#ededed] truncate" title={doc.file_name}>
                         {doc.file_name}
                       </span>
                     </div>
-                    <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700/60 flex-shrink-0">
-                      {doc.chunks} {doc.chunks === 1 ? 'chunk' : 'chunks'}
+                    <span className="text-[11px] font-mono tabular-nums text-[#85858b] flex-shrink-0">
+                      {doc.chunks} ch
                     </span>
                   </div>
                 ))}
@@ -661,28 +544,19 @@ export function App() {
           </div>
         </div>
 
-        {/* Local Architecture Info Footer */}
-        <div className="p-4 border-t border-slate-800/80 bg-slate-950/80 text-[11px] text-slate-400 space-y-2">
+        {/* Sidebar Footer */}
+        <div className="p-3 border-t border-white/[0.08] bg-[#0f0f10] text-[11px] text-[#85858b] space-y-1 font-mono">
           <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1.5">
-              <Cpu className="h-3.5 w-3.5 text-purple-400" />
-              Ollama Model
-            </span>
-            <span className="text-emerald-400 font-mono font-medium">qwen2.5-coder:7b</span>
+            <span>Model</span>
+            <span className="text-[#a1a1a6]">qwen2.5-coder:7b</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1.5">
-              <Database className="h-3.5 w-3.5 text-cyan-400" />
-              Embeddings
-            </span>
-            <span className="text-slate-300 font-mono">all-MiniLM-L6-v2</span>
+            <span>Vector index</span>
+            <span className="text-[#a1a1a6]">all-MiniLM-L6-v2</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1.5">
-              <Server className="h-3.5 w-3.5 text-blue-400" />
-              Local Endpoint
-            </span>
-            <span className="text-slate-400 font-mono">:8000 (Air-Gapped)</span>
+            <span>Store</span>
+            <span className="text-[#a1a1a6]">ChromaDB</span>
           </div>
         </div>
       </aside>
@@ -690,134 +564,96 @@ export function App() {
       {/* ========================================================= */}
       {/* MAIN CHAT AREA                                            */}
       {/* ========================================================= */}
-      <main className="flex-1 flex flex-col h-full bg-slate-950 relative overflow-hidden">
-        {/* Chat Header */}
-        <header className="h-16 border-b border-slate-800/80 px-6 flex items-center justify-between bg-slate-900/50 backdrop-blur-md flex-shrink-0 z-10">
+      <main className="flex-1 flex flex-col h-full bg-[#141415] relative overflow-hidden">
+        {/* Header */}
+        <header className="h-13 border-b border-white/[0.08] px-6 flex items-center justify-between bg-[#0f0f10] flex-shrink-0">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-cyan-600 to-blue-600 flex items-center justify-center shadow-md shadow-cyan-900/30 ring-1 ring-white/10">
-              <Bot className="h-5 w-5 text-white" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-white">Enterprise AI Assistant</h2>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950/60 border border-cyan-800/50 text-cyan-300">
-                  Strict Context Mode
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Queries are strictly grounded in your ChromaDB document chunks
-              </p>
-            </div>
+            <span className="text-xs font-medium text-[#ededed]">Corporate Assistant</span>
+            <span className="text-[11px] text-[#85858b]">Constrained to provided context</span>
           </div>
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleClearChat}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 active:scale-[0.98] transition-all duration-150 border border-slate-800 cursor-pointer shadow-sm"
-              title="Clear message history"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              <span>Clear Chat</span>
-            </button>
-          </div>
+          <button
+            onClick={handleClearChat}
+            className="flex items-center gap-1.5 text-xs text-[#85858b] hover:text-[#ededed] px-2 py-1 rounded hover:bg-[#19191b] transition-colors cursor-pointer"
+            title="Clear chat history"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Clear</span>
+          </button>
         </header>
 
-        {/* Global Error Banner (Backend Unreachable or LLM Timeout) */}
+        {/* Error Banner */}
         {activeError && (
-          <div className="mx-6 mt-4 p-4 rounded-2xl border border-rose-500/40 bg-gradient-to-r from-rose-950/60 via-slate-900/90 to-rose-950/60 backdrop-blur-md shadow-lg shadow-rose-950/30 flex items-start justify-between gap-4 animate-fadeIn z-20">
-            <div className="flex items-start gap-3">
-              <div className="p-2 rounded-xl bg-rose-500/20 text-rose-300 border border-rose-500/30 flex-shrink-0 mt-0.5">
-                {activeError.type === 'network' ? (
-                  <WifiOff className="h-5 w-5 text-rose-400" />
-                ) : (
-                  <AlertTriangle className="h-5 w-5 text-amber-400" />
-                )}
+          <div className="mx-6 mt-3 p-3 rounded-md border border-[#e5484d]/30 bg-[#1c1415] text-xs text-[#ededed] flex items-start justify-between gap-3 animate-fadeIn">
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5 text-[#e5484d] font-medium">
+                <AlertCircle className="h-3.5 w-3.5" />
+                <span>{activeError.title}</span>
               </div>
-              <div>
-                <h3 className="text-xs font-bold text-rose-200 tracking-wide uppercase">
-                  {activeError.title}
-                </h3>
-                <p className="text-xs text-rose-100/90 mt-1 leading-relaxed max-w-2xl">
-                  {activeError.message}
-                </p>
-                {activeError.retryQuery && (
-                  <button
-                    onClick={() => {
-                      const q = activeError.retryQuery
-                      setActiveError(null)
-                      if (q) executeChatQuery(q)
-                    }}
-                    className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-100 bg-rose-800/40 hover:bg-rose-800/60 border border-rose-700/60 active:scale-95 transition-all duration-150 cursor-pointer"
-                  >
-                    <RotateCcw className="h-3 w-3" />
-                    Retry Query: "{activeError.retryQuery.slice(0, 35)}..."
-                  </button>
-                )}
-              </div>
+              <p className="text-[#a1a1a6] leading-relaxed">{activeError.message}</p>
+              {activeError.retryQuery && (
+                <button
+                  onClick={() => {
+                    const q = activeError.retryQuery
+                    setActiveError(null)
+                    if (q) executeChatQuery(q)
+                  }}
+                  className="mt-1 inline-flex items-center gap-1 text-[11px] text-[#ededed] hover:underline cursor-pointer"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  Retry query
+                </button>
+              )}
             </div>
 
             <button
               onClick={() => setActiveError(null)}
-              className="text-rose-400 hover:text-rose-200 p-1.5 rounded-lg hover:bg-rose-900/30 transition-colors"
-              title="Dismiss error banner"
+              className="text-[#85858b] hover:text-[#ededed] p-1"
             >
-              <X className="h-4 w-4" />
+              <X className="h-3.5 w-3.5" />
             </button>
           </div>
         )}
 
-        {/* Scrollable Chat Messages Container */}
+        {/* Messages List */}
         <div
           ref={messagesContainerRef}
-          className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 space-y-6 scroll-smooth"
+          className="flex-1 overflow-y-auto px-6 py-6 space-y-4"
         >
-          {messages.map((message) => {
-            const isUser = message.role === 'user'
-            const hasSources = message.sources && message.sources.length > 0
-            const isExpanded = !!expandedSources[message.id]
+          <div className="max-w-[700px] mx-auto space-y-4">
+            {messages.map((message) => {
+              const isUser = message.role === 'user'
+              const hasSources = message.sources && message.sources.length > 0
+              const isExpanded = !!expandedSources[message.id]
 
-            return (
-              <div
-                key={message.id}
-                className={`flex gap-3.5 max-w-3xl transition-all duration-200 animate-fadeIn ${
-                  isUser ? 'ml-auto flex-row-reverse' : 'mr-auto'
-                }`}
-              >
-                {/* Avatar Icon */}
+              return (
                 <div
-                  className={`h-8 w-8 rounded-xl flex items-center justify-center flex-shrink-0 text-white shadow-md transition-transform duration-200 ${
-                    isUser
-                      ? 'bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-blue-900/30'
-                      : message.error
-                      ? 'bg-rose-600 shadow-rose-900/30'
-                      : 'bg-gradient-to-tr from-cyan-600 to-slate-800 border border-cyan-500/30 shadow-cyan-950/40'
+                  key={message.id}
+                  className={`flex flex-col space-y-1.5 animate-fadeIn ${
+                    isUser ? 'items-end' : 'items-start'
                   }`}
                 >
-                  {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
-                </div>
-
-                {/* Message Bubble & Content */}
-                <div className={`flex flex-col space-y-2 max-w-[85%] ${isUser ? 'items-end' : 'items-start'}`}>
+                  {/* Bubble */}
                   <div
-                    className={`rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm transition-all duration-200 ${
+                    className={`rounded-lg px-3.5 py-2.5 text-xs leading-relaxed max-w-[85%] ${
                       isUser
-                        ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-tr-none shadow-blue-950/20'
+                        ? 'bg-[#232325] border border-white/[0.08] text-[#ededed]'
                         : message.error
-                        ? 'bg-rose-950/40 border border-rose-500/40 text-rose-200 rounded-tl-none shadow-rose-950/20'
-                        : 'bg-slate-900/90 border border-slate-800/90 text-slate-100 rounded-tl-none shadow-slate-950/40'
+                        ? 'bg-[#1c1415] border border-[#e5484d]/30 text-[#e5484d]'
+                        : 'bg-[#19191b] border border-white/[0.06] text-[#ededed]'
                     }`}
                   >
                     <div className="whitespace-pre-wrap break-words">{message.content}</div>
 
                     {message.error && message.queryAttempted && (
-                      <div className="mt-2.5 pt-2 border-t border-rose-500/20 flex items-center justify-between">
-                        <span className="text-[11px] text-rose-300 font-mono truncate max-w-[200px]">
-                          Query failed: {message.queryAttempted}
+                      <div className="mt-2 pt-1.5 border-t border-white/[0.06] flex items-center justify-between text-[11px]">
+                        <span className="text-[#85858b] font-mono truncate">
+                          Failed: {message.queryAttempted}
                         </span>
                         <button
                           onClick={() => executeChatQuery(message.queryAttempted!)}
                           disabled={isChatLoading}
-                          className="flex items-center gap-1 text-[11px] font-semibold text-rose-200 hover:text-white underline ml-2 cursor-pointer"
+                          className="text-[#ededed] hover:underline ml-2 cursor-pointer inline-flex items-center gap-1"
                         >
                           <RotateCcw className="h-3 w-3" />
                           Retry
@@ -826,71 +662,60 @@ export function App() {
                     )}
                   </div>
 
-                  {/* Expandable Source Citations Component */}
+                  {/* Sources Drawer */}
                   {!isUser && hasSources && (
-                    <div className="w-full rounded-xl border border-slate-800/90 bg-slate-900/70 backdrop-blur-sm overflow-hidden transition-all duration-300 shadow-sm mt-1">
+                    <div className="w-full max-w-[85%] border border-white/[0.06] rounded-md bg-[#161617] p-2 space-y-2">
                       <button
                         onClick={() => toggleSources(message.id)}
-                        className="flex items-center justify-between w-full px-3.5 py-2.5 text-xs font-medium text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/20 active:bg-cyan-950/40 transition-all duration-200 cursor-pointer"
+                        className="flex items-center justify-between w-full text-[11px] text-[#a1a1a6] hover:text-[#ededed] transition-colors cursor-pointer"
                       >
-                        <span className="flex items-center gap-2">
-                          <BookOpen className="h-3.5 w-3.5 text-cyan-400" />
-                          <span>Verified Source Citations</span>
-                          <span className="px-1.5 py-0.2 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800/50 text-[10px] font-mono">
-                            {message.sources!.length}
-                          </span>
+                        <span className="flex items-center gap-1.5 font-mono">
+                          <BookOpen className="h-3 w-3 text-[#85858b]" />
+                          <span>Sources ({message.sources!.length})</span>
                         </span>
                         {isExpanded ? (
-                          <ChevronUp className="h-3.5 w-3.5 transition-transform duration-200" />
+                          <ChevronUp className="h-3 w-3 text-[#85858b]" />
                         ) : (
-                          <ChevronDown className="h-3.5 w-3.5 transition-transform duration-200" />
+                          <ChevronDown className="h-3 w-3 text-[#85858b]" />
                         )}
                       </button>
 
-                      {/* Animated Expanded Citations List */}
                       {isExpanded && (
-                        <div className="p-3 pt-1 space-y-2 border-t border-slate-800/80 animate-fadeIn transition-all duration-300">
+                        <div className="space-y-1.5 pt-1 border-t border-white/[0.06]">
                           {message.sources!.map((src, sIdx) => {
-                            const snippetKey = `${message.id}-src-${sIdx}`
-                            const isCopied = copiedSnippetId === snippetKey
+                            const key = `${message.id}-${sIdx}`
+                            const isCopied = copiedKey === key
 
                             return (
                               <div
-                                key={snippetKey}
-                                className="rounded-xl bg-slate-950/70 border border-slate-800/80 p-3 text-xs space-y-2 hover:border-slate-700/80 transition-all duration-200 group"
+                                key={key}
+                                className="rounded border border-white/[0.06] bg-[#19191b] p-2 text-[11px] space-y-1.5"
                               >
-                                <div className="flex items-center justify-between font-mono text-[11px] text-slate-300">
+                                <div className="flex items-center justify-between font-mono text-[#85858b]">
                                   <div className="flex items-center gap-1.5 truncate max-w-[220px]">
-                                    <FileText className="h-3.5 w-3.5 text-cyan-400 flex-shrink-0" />
-                                    <span
-                                      className="font-semibold text-cyan-200 truncate"
-                                      title={src.file_name}
-                                    >
+                                    <FileText className="h-3 w-3 flex-shrink-0" />
+                                    <span className="text-[#ededed] truncate" title={src.file_name}>
                                       {src.file_name}
                                     </span>
                                   </div>
-                                  <div className="flex items-center gap-1.5 text-slate-400 flex-shrink-0">
-                                    <span className="px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[10px]">
-                                      Page {src.page !== undefined ? src.page + 1 : 'N/A'}
-                                    </span>
-                                    <span className="px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[10px]">
-                                      Chunk #{src.chunk_index}
-                                    </span>
+                                  <div className="flex items-center gap-2 tabular-nums">
+                                    <span>p. {src.page !== undefined ? src.page + 1 : '—'}</span>
+                                    <span>#{src.chunk_index}</span>
                                   </div>
                                 </div>
 
                                 {src.preview && (
-                                  <div className="relative group/snippet">
-                                    <blockquote className="text-slate-300 text-[11px] leading-relaxed italic bg-slate-900/90 p-2.5 pr-8 rounded-lg border-l-2 border-cyan-500 font-sans">
-                                      "{src.preview}"
+                                  <div className="relative group">
+                                    <blockquote className="border-l border-white/20 pl-2 text-[11px] font-mono text-[#a1a1a6] leading-relaxed select-text">
+                                      {src.preview}
                                     </blockquote>
                                     <button
-                                      onClick={() => handleCopySnippet(src.preview!, snippetKey)}
-                                      className="absolute right-2 top-2 p-1 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors opacity-0 group-hover/snippet:opacity-100 cursor-pointer"
-                                      title="Copy citation snippet"
+                                      onClick={() => handleCopySnippet(src.preview!, key)}
+                                      className="absolute right-1 top-1 p-1 rounded bg-[#232325] text-[#85858b] hover:text-[#ededed] opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                                      title="Copy excerpt"
                                     >
                                       {isCopied ? (
-                                        <Check className="h-3 w-3 text-emerald-400" />
+                                        <Check className="h-3 w-3 text-[#4cc38a]" />
                                       ) : (
                                         <Copy className="h-3 w-3" />
                                       )}
@@ -905,118 +730,82 @@ export function App() {
                     </div>
                   )}
 
-                  {/* Timestamp */}
-                  <span className="text-[10px] text-slate-500 font-mono px-1">
+                  <span className="text-[10px] font-mono text-[#85858b] px-1">
                     {message.timestamp}
                   </span>
                 </div>
-              </div>
-            )
-          })}
+              )
+            })}
 
-          {/* Smooth Visually Distinct 'Thinking...' Typing Indicator */}
-          {isChatLoading && (
-            <div className="flex gap-3.5 max-w-3xl mr-auto animate-fadeIn transition-all duration-300">
-              <div className="relative h-8 w-8 rounded-xl bg-gradient-to-tr from-cyan-600 to-slate-800 border border-cyan-500/40 flex items-center justify-center flex-shrink-0 text-white shadow-lg shadow-cyan-950/40">
-                <Bot className="h-4 w-4" />
-                <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-500"></span>
-                </span>
-              </div>
-
-              <div className="rounded-2xl rounded-tl-none px-4 py-3 bg-slate-900/90 border border-cyan-500/30 backdrop-blur-md shadow-lg shadow-cyan-950/20 space-y-2">
-                <div className="flex items-center gap-3">
-                  {/* Staggered bouncing indicator dots */}
-                  <div className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-cyan-400 animate-bounce [animation-delay:-0.3s]"></span>
-                    <span className="h-2 w-2 rounded-full bg-cyan-400 animate-bounce [animation-delay:-0.15s]"></span>
-                    <span className="h-2 w-2 rounded-full bg-cyan-400 animate-bounce"></span>
-                  </div>
-                  <span className="text-xs font-medium text-cyan-200">
-                    Generating answer from local context...
-                  </span>
-                  <span className="text-[11px] font-mono text-cyan-400/80 bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-800/40">
+            {/* Thinking state */}
+            {isChatLoading && (
+              <div className="flex flex-col space-y-1.5 animate-fadeIn items-start">
+                <div className="rounded-lg px-3 py-2 bg-[#19191b] border border-white/[0.06] text-xs flex items-center gap-2.5 text-[#a1a1a6]">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-[#85858b]" />
+                  <span>Evaluating context</span>
+                  <span className="text-[10px] font-mono tabular-nums text-[#85858b]">
                     {thinkingSeconds}s
                   </span>
                 </div>
-
-                <p className="text-[11px] text-slate-400 font-mono flex items-center gap-1.5">
-                  <Database className="h-3 w-3 text-cyan-400 animate-pulse" />
-                  Similarity search on ChromaDB & prompt evaluation on Qwen 2.5
-                </p>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Quick Prompt Suggestions when conversation is young */}
-          {messages.length === 1 && !isChatLoading && (
-            <div className="pt-4 max-w-2xl mx-auto space-y-3 animate-fadeIn">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                <Sparkles className="h-3.5 w-3.5 text-cyan-400" />
-                Suggested Inquiries
+            {/* Suggested inquiries for initial turn */}
+            {messages.length === 1 && !isChatLoading && (
+              <div className="pt-6 space-y-2">
+                <p className="text-[11px] text-[#85858b]">Sample queries</p>
+                <div className="space-y-1.5">
+                  {sampleQueries.map((query, i) => (
+                    <button
+                      key={i}
+                      onClick={() => executeChatQuery(query)}
+                      className="w-full text-left p-2.5 rounded-md border border-white/[0.06] bg-[#19191b] hover:bg-[#232325] text-xs text-[#a1a1a6] hover:text-[#ededed] transition-colors cursor-pointer"
+                    >
+                      {query}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                {suggestedPrompts.map((prompt, i) => (
-                  <button
-                    key={i}
-                    onClick={() => executeChatQuery(prompt)}
-                    className="p-3 text-left rounded-xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900 hover:border-cyan-500/40 active:scale-[0.98] transition-all duration-200 text-xs text-slate-300 hover:text-white cursor-pointer group shadow-sm"
-                  >
-                    <span className="line-clamp-2 leading-relaxed">{prompt}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+            )}
 
-          {/* Scroll Anchor */}
-          <div ref={chatEndRef} className="h-px w-full" />
+            <div ref={chatEndRef} className="h-px w-full" />
+          </div>
         </div>
 
-        {/* Chat Input Bar (Sticky at Bottom) */}
-        <div className="p-4 sm:p-5 border-t border-slate-800/80 bg-slate-900/40 backdrop-blur-md flex-shrink-0">
+        {/* Input Bar */}
+        <div className="p-3 border-t border-white/[0.08] bg-[#0f0f10] flex-shrink-0">
           <form
-            onSubmit={handleSendMessage}
-            className="max-w-3xl mx-auto relative flex items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault()
+              executeChatQuery(inputQuery)
+            }}
+            className="max-w-[700px] mx-auto flex items-center gap-2"
           >
-            <div className="relative flex-1">
-              <input
-                type="text"
-                value={inputQuery}
-                onChange={(e) => setInputQuery(e.target.value)}
-                placeholder={
-                  backendOnline === false
-                    ? 'Backend server is offline (:8000)...'
-                    : documents.length > 0
-                    ? 'Ask a question about the uploaded documents...'
-                    : 'Upload a document in the sidebar to begin querying...'
-                }
-                disabled={isChatLoading || backendOnline === false}
-                className="w-full bg-slate-900/90 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition-all duration-200 pr-12 disabled:opacity-50 shadow-inner"
-              />
-              <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5 text-xs text-slate-500 pointer-events-none">
-                <Sparkles className="h-4 w-4 text-cyan-500/70" />
-              </div>
-            </div>
+            <input
+              type="text"
+              value={inputQuery}
+              onChange={(e) => setInputQuery(e.target.value)}
+              placeholder={
+                backendOnline === false
+                  ? 'Backend offline (127.0.0.1:8000)...'
+                  : 'Ask a question about the documents...'
+              }
+              disabled={isChatLoading || backendOnline === false}
+              className="flex-1 h-9 bg-[#19191b] border border-white/[0.08] rounded-md px-3 text-xs text-[#ededed] placeholder-[#85858b] focus:outline-none focus:border-white/30 transition-colors disabled:opacity-40"
+            />
 
             <button
               type="submit"
               disabled={!inputQuery.trim() || isChatLoading || backendOnline === false}
-              className="h-11 w-11 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 active:scale-95 text-white flex items-center justify-center transition-all duration-200 disabled:opacity-40 disabled:pointer-events-none shadow-md shadow-cyan-900/30 flex-shrink-0 cursor-pointer"
-              title="Send query"
+              className="h-9 px-3 rounded-md bg-[#ededed] text-[#141415] hover:bg-white active:scale-[0.99] text-xs font-medium transition-all duration-120 disabled:opacity-30 disabled:pointer-events-none cursor-pointer flex items-center gap-1.5"
             >
-              {isChatLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
+              <Send className="h-3 w-3" />
+              <span>Send</span>
             </button>
           </form>
 
-          <p className="text-[10px] text-center text-slate-500 mt-2 font-mono flex items-center justify-center gap-1.5">
-            <ShieldCheck className="h-3 w-3 text-emerald-400" />
-            Air-Gapped: Zero prompts or vector embeddings are transmitted outside localhost.
+          <p className="text-[10px] text-center text-[#85858b] mt-1.5 font-mono">
+            Air-gapped execution • All data remains on localhost
           </p>
         </div>
       </main>
